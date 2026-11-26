@@ -1,3 +1,4 @@
 streamlit>=1.63,<2
 pandas
+altair
 requests

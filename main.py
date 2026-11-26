@@ -1,7 +1,10 @@
+import time
+
 import requests
 
-from datetime import date, timedelta
+from datetime import date
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -63,18 +66,52 @@ with st.sidebar:
             for name in MACROS
         }
 
+@st.dialog("Log my weight")
+def weight_dialog():
+    with st.form("weight_entry", enter_to_submit=False):
+        entry_date = st.date_input("Date", value=day, max_value=date.today())
+        amount = st.number_input("Weight (lb)", min_value=0.1, value=None, step=0.1)
+        st.caption("Saving another weight for the same date updates that day's point.")
+        with st.container(horizontal=True):
+            cancel = st.form_submit_button("Cancel")
+            done = st.form_submit_button("Done", type="primary")
+    if cancel:
+        st.rerun()
+    if done:
+        if amount is None:
+            st.error("Enter a weight before saving.")
+        else:
+            st.session_state.weights[entry_date] = amount
+            st.rerun()
+
+
 if view == "Progress":
-    st.title("Progress")
-    start = day - timedelta(days=6)
-    st.caption(f"Weekly calorie intake · {start:%b %d} – {day:%b %d, %Y}")
-    week = [entry for entry in st.session_state.entries if start <= entry["Date"] <= day]
-    if week:
-        daily = pd.DataFrame(week).groupby("Date")["Calories (kcal)"].sum()
-        st.bar_chart(daily, y_label="Calories (kcal)")
-        if goal:
-            st.caption(f"Current daily goal: {goal:,} kcal")
+    if "weights" not in st.session_state:
+        st.session_state.weights = {}
+    heading, action = st.columns([3, 1], vertical_alignment="center")
+    heading.title("Progress")
+    if action.button("Add Weight Entry", type="primary"):
+        weight_dialog()
+
+    st.subheader("Weight history")
+    if st.session_state.weights:
+        history = pd.DataFrame(sorted(st.session_state.weights.items()), columns=["Date", "Weight (lb)"])
+        chart = alt.Chart(history).mark_line(point=True).encode(
+            x=alt.X("Date:T", scale=alt.Scale(type="utc"),
+                    axis=alt.Axis(format="%m/%d", tickMinStep=86_400_000)),
+            y=alt.Y("Weight (lb):Q", scale=alt.Scale(zero=False)),
+            tooltip=["Date:T", "Weight (lb):Q"],
+        )
+        st.altair_chart(chart, width="stretch")
+        with st.expander("Logged weight entries", expanded=True):
+            st.dataframe(
+                history.sort_values("Date", ascending=False),
+                hide_index=True,
+                width="stretch",
+                column_config={"Date": st.column_config.DateColumn(format="MM/DD/YYYY")},
+            )
     else:
-        st.info("Log a food during this week to see your daily calorie totals.")
+        st.info("Add your first weight entry to start your graph.")
     st.stop()
 
 st.title("VitalFlow")
@@ -137,12 +174,16 @@ def clear_product():
     st.session_state.pop("lookup_results", None)
 
 
-@st.dialog("Add a food")
+@st.dialog("Log meal")
 def food_dialog():
     meal = st.selectbox("Meal", ["Breakfast", "Lunch", "Dinner", "Snack"], key="lookup_meal")
+    method = st.radio("Entry method", ["Search foods", "Enter manually"], horizontal=True,
+                      key="lookup_method", on_change=clear_product)
     food = st.text_input("Food Name", key="lookup_food", on_change=clear_product)
-    if st.button("Search", disabled=not food.strip()):
+    if method == "Search foods" and st.button("Search", disabled=not food.strip()):
         try:
+            with st.spinner("Loading..."):
+                time.sleep(2)
             st.session_state.lookup_results = search_foods(food.strip())
         except requests.HTTPError as error:
             st.error(f"Food search returned HTTP {error.response.status_code}. Please try again later.")
@@ -185,54 +226,23 @@ def food_dialog():
             st.error("Enter a food and its calories to save this entry.")
 
 
-log, add = st.columns([3, 2], gap="large")
-# with add:
-#     st.subheader("Add a food")
-#     with st.container(horizontal=True):
-#         quick = st.button("Quick add")
-#         normal = st.button("Add")
-#     if quick or normal:
-#         for key in list(st.session_state):
-#             if key.startswith("lookup_"):
-#                 del st.session_state[key]
-#         food_dialog()
+heading, action = st.columns([3, 1], vertical_alignment="center")
+heading.subheader("Today's meals" if day == date.today() else "Meals")
+if action.button("Log meal", type="primary", icon=":material/add:"):
+    for key in list(st.session_state):
+        if key.startswith("lookup_"):
+            del st.session_state[key]
+    food_dialog()
 
-    # with st.form("meal_entry", clear_on_submit=True):
-    #     meal = st.selectbox("Meal", ["Breakfast", "Lunch", "Dinner", "Snack"])
-    #     food = st.text_input("Food and portion", placeholder="e.g. 1 bowl of oatmeal")
-    #     calories = st.number_input("Calories (kcal)", min_value=0, value=None, step=1)
-    #     macros = macro_inputs()
-    #     if st.form_submit_button("Add to journal", type="primary"):
-    #         if food.strip() and calories is not None:
-    #             st.session_state.entries.append({
-    #                 "Date": day, "Meal": meal, "Food Name": food.strip(),
-    #                 "Calories (kcal)": calories, **macros,
-    #             })
-    #             st.rerun()
-    #         else:
-    #             st.error("Enter a food and its calories to save this entry.")
-        
+if not entries:
+    st.info("Your log is empty for this date. Log a meal to start tracking.")
 
-
-with log:
-    st.subheader("Today's meals")
-    if entries:
-        df = pd.DataFrame(entries)
-
-        if "Food and portion" in df.columns:
-            df["Food Name"] = df.get("Food Name", df["Food and portion"]).fillna(df["Food and portion"])
-
-        for meal in ["Breakfast", "Lunch", "Dinner", "Snack"]:
-            foods = df.loc[df["Meal"] == meal, ["Food Name", "Calories (kcal)"]]
-            if not foods.empty:
-                st.subheader(meal)
-                st.dataframe(foods, hide_index=True, width="stretch")
-    else:
-        normaltest = st.button("Log Meal", width = "stretch", icon="➕")
-        if normaltest:
-            for key in list(st.session_state):
-                if key.startswith("lookup_"):
-                    del st.session_state[key]
-            food_dialog()
-
-        st.info("Your log is empty for this date. Log a meal to start tracking.")
+for meal in ["Breakfast", "Lunch", "Dinner", "Snack"]:
+    foods = [entry for entry in entries if entry["Meal"] == meal]
+    if foods:
+        subtotal = sum(food["Calories (kcal)"] for food in foods)
+        with st.expander(f"{meal}  ·  {subtotal:,} kcal", expanded=False):
+            for food in foods:
+                name, calories = st.columns([3, 1])
+                name.text(food.get("Food Name") or food.get("Food and portion") or "Unnamed food")
+                calories.text(f"{food['Calories (kcal)']:,} kcal")
